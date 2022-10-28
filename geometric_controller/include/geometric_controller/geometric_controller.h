@@ -53,6 +53,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TwistStamped.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/AttitudeTarget.h>
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/CompanionProcessStatus.h>
@@ -124,6 +125,8 @@ class geometricCtrl {
   double norm_thrust_const_, norm_thrust_offset_;
   double max_fb_acc_;
   double dx_, dy_, dz_;
+  bool _offboard_enabled = false;
+  ros::Time start_time;
 
   mavros_msgs::State current_state_;
   mavros_msgs::SetMode offb_set_mode_;

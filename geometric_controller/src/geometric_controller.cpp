@@ -114,6 +114,8 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle &nh, const ros::NodeHandle &n
   D_ << dx_, dy_, dz_;
 
   tau << tau_x, tau_y, tau_z;
+
+  start_time = ros::Time::now();
 }
 geometricCtrl::~geometricCtrl() {
   // Destructor
@@ -230,13 +232,14 @@ void geometricCtrl::cmdloopCallback(const ros::TimerEvent &event) {
       node_state = MISSION_EXECUTION;
       break;
 
-    case MISSION_EXECUTION:
-      if (!feedthrough_enable_) computeBodyRateCmd(cmdBodyRate_, targetPos_, targetVel_, targetAcc_);
-      pubReferencePose(targetPos_, q_des);
-      pubRateCommands(cmdBodyRate_, q_des);
-      appendPoseHistory();
-      pubPoseHistory();
+    case MISSION_EXECUTION: {
+        if (!feedthrough_enable_) computeBodyRateCmd(cmdBodyRate_, targetPos_, targetVel_, targetAcc_);
+        pubReferencePose(targetPos_, q_des);
+        pubRateCommands(cmdBodyRate_, q_des);
+        appendPoseHistory();
+        pubPoseHistory();
       break;
+    }
 
     case LANDING: {
       geometry_msgs::PoseStamped landingmsg;
@@ -259,25 +262,89 @@ void geometricCtrl::mavstateCallback(const mavros_msgs::State::ConstPtr &msg) { 
 
 void geometricCtrl::statusloopCallback(const ros::TimerEvent &event) {
   if (sim_enable_) {
+    
     // Enable OFFBoard mode and arm automatically
-    // This is only run if the vehicle is simulated
+
+    ros::Rate rate(20.0);
+
+    while(ros::ok() && !current_state_.connected)
+    {
+        ros::spinOnce();
+        rate.sleep();
+    }
+
     arm_cmd_.request.value = true;
     offb_set_mode_.request.custom_mode = "OFFBOARD";
-    if (current_state_.mode != "OFFBOARD" && (ros::Time::now() - last_request_ > ros::Duration(5.0))) {
-      if (set_mode_client_.call(offb_set_mode_) && offb_set_mode_.response.mode_sent) {
-        ROS_INFO("Offboard enabled");
-      }
-      last_request_ = ros::Time::now();
-    } else {
-      if (!current_state_.armed && (ros::Time::now() - last_request_ > ros::Duration(5.0))) {
-        if (arming_client_.call(arm_cmd_) && arm_cmd_.response.success) {
-          ROS_INFO("Vehicle armed");
+    last_request_ = ros::Time::now();
+
+    if (!_offboard_enabled)
+    {
+        // *** Make sure takeoff is not immediately sent, this will help to stream the correct data to the program first
+        // *** Will give a 1sec buffer ***
+        while (ros::Time::now() - last_request_ < ros::Duration(1.0))
+        {
+            // Empty
         }
-        last_request_ = ros::Time::now();
-      }
+
+        // send a few setpoints before starting
+        for (int i = 10; ros::ok() && i > 0; --i)
+        {
+            pubReferencePose(targetPos_, q_des);
+            pubRateCommands(cmdBodyRate_, q_des);
+            appendPoseHistory();
+            pubPoseHistory();
+
+            ros::spinOnce();
+            rate.sleep();
+        }
+
+        bool is_mode_ready = false;
+
+        while (!is_mode_ready)
+        {
+
+            if (current_state_.mode != "OFFBOARD" &&
+                (ros::Time::now() - last_request_ > ros::Duration(5.0)))
+            {
+                ROS_INFO("Try set offboard");
+                if (set_mode_client_.call(offb_set_mode_) &&
+                    offb_set_mode_.response.mode_sent)
+                {
+                    ROS_INFO("Offboard Enabled");
+                }
+                last_request_ = ros::Time::now();
+            }
+            else
+            {
+                if (!current_state_.armed &&
+                    (ros::Time::now() - last_request_ > ros::Duration(5.0)))
+                {
+                    ROS_INFO("Try arm");
+                    if (arming_client_.call(arm_cmd_) && arm_cmd_.response.success)
+                    {
+                        ROS_INFO("Vehicle armed");  
+                    }
+                    last_request_ = ros::Time::now();
+                }
+            }
+
+            pubReferencePose(targetPos_, q_des);
+            pubRateCommands(cmdBodyRate_, q_des);
+            appendPoseHistory();
+            pubPoseHistory();
+
+            is_mode_ready = (current_state_.mode == "OFFBOARD") 
+                && current_state_.armed;
+            ros::spinOnce();
+            rate.sleep();        
+        }
+
+        _offboard_enabled = true;
+        ROS_INFO("Offboard mode activated!");
     }
+    
   }
-  pubSystemStatus();
+      pubSystemStatus();
 }
 
 void geometricCtrl::pubReferencePose(const Eigen::Vector3d &target_position, const Eigen::Vector4d &target_attitude) {
